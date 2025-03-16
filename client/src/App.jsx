@@ -23,9 +23,12 @@ function App() {
   const [availableEvents, setAvailableEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [sessionId, setSessionId] = useState(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingUsers, setTypingUsers] = useState([]);
   
   const socketRef = useRef();
   const messagesEndRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
   
   // Load session data from localStorage on initial render
   useEffect(() => {
@@ -140,6 +143,20 @@ function App() {
         addNotification(`${data.participant.username} has ${action} the event`);
       });
       
+      // User typing indicator
+      socketRef.current.on('userTyping', ({ username, isTyping }) => {
+        if (isTyping) {
+          setTypingUsers(prev => {
+            if (!prev.includes(username)) {
+              return [...prev, username];
+            }
+            return prev;
+          });
+        } else {
+          setTypingUsers(prev => prev.filter(user => user !== username));
+        }
+      });
+      
       return () => {
         debug('Removing event listeners');
         socketRef.current.off('eventHistory');
@@ -147,6 +164,7 @@ function App() {
         socketRef.current.off('participantUpdate');
         socketRef.current.off('sessionEstablished');
         socketRef.current.off('sessionError');
+        socketRef.current.off('userTyping');
       };
     }
   }, [connected]);
@@ -204,16 +222,38 @@ function App() {
     debug(`Sending message: ${message.substring(0, 30)}...`);
     socketRef.current.emit('sendMessage', message);
     setMessage('');
+    
+    // Clear typing indicator when sending a message
+    setIsTyping(false);
+    clearTimeout(typingTimeoutRef.current);
+    socketRef.current.emit('typing', { isTyping: false });
+  };
+  
+  // Handle typing indicator
+  const handleTyping = (e) => {
+    setMessage(e.target.value);
+    
+    if (!isTyping) {
+      setIsTyping(true);
+      socketRef.current.emit('typing', { isTyping: true });
+    }
+    
+    // Clear previous timeout
+    clearTimeout(typingTimeoutRef.current);
+    
+    // Set new timeout
+    typingTimeoutRef.current = setTimeout(() => {
+      setIsTyping(false);
+      socketRef.current.emit('typing', { isTyping: false });
+    }, 2000);
   };
   
   // Add a notification
   const addNotification = (text) => {
     const notification = {
       id: Date.now(),
-      text,
-      timestamp: new Date()
+      text
     };
-    
     setNotifications(prev => [...prev, notification]);
     
     // Remove notification after 5 seconds
@@ -227,30 +267,26 @@ function App() {
       <header>
         <h1>Live Event Platform</h1>
         <div className="connection-status">
-          Status: 
           <span className={`status ${connected ? 'connected' : 'disconnected'}`}>
-            {connected ? 'Connected' : 'Disconnected'}
+            {connected ? 'CONNECTED' : 'DISCONNECTED'}
           </span>
-          {sessionId && <span className="session-info"> (Session: {sessionId.substring(0, 8)}...)</span>}
         </div>
       </header>
       
+      <div className="notifications">
+        {notifications.map(notification => (
+          <div key={notification.id} className="notification">
+            {notification.text}
+          </div>
+        ))}
+      </div>
+      
       <main>
-        {/* Notifications */}
-        <div className="notifications">
-          {notifications.map(notification => (
-            <div key={notification.id} className="notification">
-              {notification.text}
-            </div>
-          ))}
-        </div>
-        
         {!activeEvent ? (
-          <div className="join-container">
+          <div className="join-form">
             <h2>Join an Event</h2>
-            
             <form onSubmit={joinEvent} className="join-form">
-              <div className="form-group">
+              <div>
                 <label htmlFor="username">Your Name</label>
                 <input
                   type="text"
@@ -262,7 +298,7 @@ function App() {
                 />
               </div>
               
-              <div className="form-group">
+              <div>
                 <label htmlFor="eventId">Event ID</label>
                 <input
                   type="text"
@@ -287,7 +323,7 @@ function App() {
                         onClick={() => setEventId(event.id)}
                         className="event-button"
                       >
-                        {event.id} ({event.participantCount} participants)
+                        <span>📌</span> {event.id} ({event.participantCount} participants)
                       </button>
                     </li>
                   ))}
@@ -337,6 +373,15 @@ function App() {
                       <div className="message-body">{msg.text}</div>
                     </div>
                   ))}
+                  
+                  {typingUsers.length > 0 && (
+                    <div className="typing-indicator">
+                      {typingUsers.length === 1 
+                        ? `${typingUsers[0]} is typing...` 
+                        : `${typingUsers.length} people are typing...`}
+                    </div>
+                  )}
+                  
                   <div ref={messagesEndRef} />
                 </div>
                 
@@ -344,7 +389,7 @@ function App() {
                   <input
                     type="text"
                     value={message}
-                    onChange={(e) => setMessage(e.target.value)}
+                    onChange={handleTyping}
                     placeholder="Type a message..."
                   />
                   <button type="submit">Send</button>
